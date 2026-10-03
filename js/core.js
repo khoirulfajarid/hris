@@ -1,12 +1,12 @@
 /* ============================================================================
  * SIM HRD — core.js
- * State · API (fetch → GAS /exec) · cache SWR · router SPA · layout · UI toolkit
+ * State · API (SB.route: baca → Supabase, tulis → Apps Script) · cache SWR · router SPA · layout · UI toolkit
  * Prinsip gas-instant-ux-pro: render dari cache dulu, 1 panggilan per layar,
  * timeout + retry, reqId untuk aksi tulis, halaman tidak dibuang saat pindah menu.
  * ========================================================================== */
 'use strict';
 var CFG = window.SIMHRD_CONFIG || {};
-var DEMO = CFG.DEMO === true || /[?&]demo=1/.test(location.search) || (CFG.DEMO === 'auto' && !CFG.GAS_URL);
+var DEMO = CFG.DEMO === true || /[?&]demo=1/.test(location.search) || (CFG.DEMO === 'auto' && !CFG.SUPABASE_URL);
 var GAS_URL = CFG.GAS_URL;
 var ROLE = { SA: 'SUPER_ADMIN', STAFF: 'STAFF_HRD', EMP: 'KARYAWAN' };
 var App = { token: '', boot: null, pages: {}, alive: {}, layout: '', cur: '', pub: null, tables: {}, timers: {}, adminLoaded: false };
@@ -66,20 +66,37 @@ function waitOnline(ms) { return new Promise(function (r) { if (navigator.onLine
 async function apiOnce(action, data, timeout, reqId) {
   var t0 = performance.now();
   if (DEMO) { await loadDemo(); await sleep(80 + Math.random() * 160); var dr = window.DemoAPI(action, data || {}, App.token); dr = JSON.parse(JSON.stringify(dr)); Perf.add(action, Math.round(performance.now() - t0), 0); return dr; }
+
+  /* ── Supabase route (via SB.route di supabase.js) ── */
+  if (window.SB) {
+    try {
+      var res = await Promise.race([
+        SB.route(action, data || {}, reqId),
+        new Promise(function (_, rej) { setTimeout(function () { rej(new Error('timeout')); }, timeout); })
+      ]);
+      Perf.add(action, Math.round(performance.now() - t0), null);
+      return res;
+    } catch (err) {
+      return { success: false, network: true, retryable: true,
+        message: err.message === 'timeout' ? 'Server terlalu lama merespons.' : 'Kesalahan: ' + err.message };
+    }
+  }
+
+  /* ── Fallback: GAS (hanya jika SB tidak tersedia) ── */
   var ctrl = new AbortController(), timer = setTimeout(function () { ctrl.abort(); }, timeout);
   try {
-    var res = await fetch(GAS_URL, { method: 'POST', redirect: 'follow', cache: 'no-store', signal: ctrl.signal,
+    var fres = await fetch(GAS_URL, { method: 'POST', redirect: 'follow', cache: 'no-store', signal: ctrl.signal,
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ action: action, token: App.token || '', reqId: reqId, data: data || {} }) });
-    var text = await res.text();
+    var text = await fres.text();
     try { var j = JSON.parse(text); Perf.add(action, Math.round(performance.now() - t0), j.ms); return j; }
-    catch (e) { return { success: false, network: true, retryable: res.status >= 500 || res.status === 429, message: 'Server membalas HTTP ' + res.status + ' (bukan JSON). Pastikan URL /exec benar & deployment "Anyone".' }; }
+    catch (e) { return { success: false, network: true, retryable: fres.status >= 500 || fres.status === 429, message: 'Server membalas HTTP ' + fres.status + ' (bukan JSON). Pastikan URL /exec benar & deployment "Anyone".' }; }
   } catch (err) {
     return { success: false, network: true, retryable: true, message: err.name === 'AbortError' ? 'Server terlalu lama merespons.' : 'Koneksi terputus. Periksa internet Anda.' };
   } finally { clearTimeout(timer); }
 }
 async function api(action, data, opt) {
   opt = opt || {};
-  if (!DEMO && !GAS_URL) return { success: false, message: 'GAS_URL belum diisi di js/config.js' };
+  if (!DEMO && !window.SB && !GAS_URL) return { success: false, message: 'SUPABASE_URL atau GAS_URL belum diisi di js/config.js' };
   var isRead = !WRITE.test(action), reqId = isRead ? '' : (opt.reqId || uuid()), tries = isRead ? 3 : 2, res;
   if (!opt.silent) busy(true);
   try {
@@ -109,7 +126,10 @@ async function swr(key, action, data, render, opt) {
 function cacheSet(key, data) { Store.set(userKey(key), { t: Date.now(), h: hashStr(JSON.stringify(data)), data: data }); }
 function cacheGet(key) { var c = Store.get(userKey(key), null); return c ? c.data : null; }
 function cacheBust(keys) { [].concat(keys).forEach(function (k) { var c = Store.get(userKey(k), null); if (c) { c.t = 0; Store.set(userKey(k), c); } }); }
-function warmUp() { if (!DEMO && GAS_URL) fetch(GAS_URL + '?ping=' + Date.now(), { mode: 'no-cors', cache: 'no-store' }).catch(function () { }); }
+function warmUp() {
+  /* Supabase: tidak perlu cold-start warm-up seperti GAS */
+  if (!DEMO && !window.SB && GAS_URL) fetch(GAS_URL + '?ping=' + Date.now(), { mode: 'no-cors', cache: 'no-store' }).catch(function () { });
+}
 function loadDemo() { return window.DemoAPI ? Promise.resolve() : loadScript('js/demo.js'); }
 
 /* ---------------------------------------------------------------- lazy loaders */
@@ -441,7 +461,7 @@ function buildLayout(layout) {
   }).join('');
   root.innerHTML =
     '<div class="shell" id="shell"><div class="sb-back" id="sbBack"></div>' +
-    '<aside class="sidebar" aria-label="Menu utama"><div class="sb-brand"><div class="logo">' + ic('building-2') + '</div><div class="grow"><div class="brand-t">SIM HRD <span class="tag">' + (isHRD() ? 'v1.1' : 'ESS') + '</span></div><div class="brand-s ellip">' + esc(isHRD() ? perusahaan() : 'Self-Service Portal') + '</div></div></div>' +
+    '<aside class="sidebar" aria-label="Menu utama"><div class="sb-brand"><div class="logo">' + ic('building-2') + '</div><div class="grow"><div class="brand-t">SIM HRD <span class="tag">' + (isHRD() ? 'v2.0' : 'ESS') + '</span></div><div class="brand-s ellip">' + esc(isHRD() ? perusahaan() : 'Self-Service Portal') + '</div></div></div>' +
     '<nav class="sb-scroll">' + items + '</nav>' +
     '<div class="sb-foot">' + avatar(me.nama) + '<div class="grow"><div class="strong ellip">' + esc(me.nama) + '</div><div class="small blue-t">' + esc(roleLabel(me.role)) + '</div></div><button class="iconbtn" id="btnOut" title="Keluar" aria-label="Keluar">' + ic('log-out') + '</button></div></aside>' +
     '<div class="main"><header class="topbar"><button class="iconbtn menu-btn" id="btnMenu" aria-label="Buka menu">' + ic('menu') + '</button>' +
@@ -496,7 +516,7 @@ function userMenu() {
   modal({ title: me.nama, sub: me.email + ' · ' + roleLabel(me.role), size: 'sm',
     body: '<div class="col"><a class="linkcard" href="#/profil" data-close>' + ic('circle-user') + '<div class="grow"><b>Profil Saya</b><div class="small muted">Data diri, KPI, PIN tanda tangan</div></div></a>' +
       '<a class="linkcard" href="#/karir" data-close>' + ic('briefcase') + '<div class="grow"><b>Portal Karir Publik</b><div class="small muted">Lihat halaman lowongan</div></div></a>' +
-      (DEMO ? '<div class="note warn">' + ic('info') + '<div>Mode Demo aktif: data contoh di browser, tidak tersambung ke Google Sheets. Isi GAS_URL di js/config.js untuk produksi.</div></div>' : '') + '</div>',
+      (DEMO ? '<div class="note warn">' + ic('info') + '<div>Mode Demo aktif: data contoh di browser, tidak tersambung ke database. Isi SUPABASE_URL di js/config.js untuk produksi.</div></div>' : '') + '</div>',
     foot: [{ label: 'Tutup', close: true }, { label: 'Keluar', cls: 'btn-danger', icon: 'log-out', act: function () { logout(); } }],
     onOpen: function (el, m) { $$('a', el).forEach(function (a) { a.addEventListener('click', function () { m.close(); }); }); } });
 }
@@ -519,7 +539,12 @@ function setSession(token, boot) {
   Store.set('sess', { token: token, boot: boot, t: Date.now() });
 }
 async function refreshBoot() {
-  var r = await api('bootstrap', {}, { silent: true });
+  var r;
+  if (window.SB) {
+    r = await SB.buildBootstrap();
+  } else {
+    r = await api('bootstrap', {}, { silent: true });
+  }
   if (r.success) {
     var roleBerubah = App.boot && App.boot.me.role !== r.data.me.role;
     setSession(App.token, r.data); updateBadges();
@@ -529,24 +554,37 @@ async function refreshBoot() {
   return r;
 }
 async function loginDengan(credential) {
-  var r = await api('login', { credential: credential, appUrl: location.origin + location.pathname });
-  if (!r.success) {
-    if (r.data && r.data.code === 'NOT_REGISTERED') { Store.set('ditolak', { email: r.data.email, nonaktif: r.data.nonaktif }); go('ditolak'); }
-    else toast(r.message, 'bad');
+  busy(true);
+  try {
+    var r;
+    if (window.SB) {
+      /* ── Supabase Auth: login via Google ID Token ── */
+      r = await SB.route('login', { credential: credential });
+    } else {
+      r = await api('login', { credential: credential, appUrl: location.origin + location.pathname });
+    }
+    if (!r.success) {
+      if (r.data && r.data.code === 'NOT_REGISTERED') { Store.set('ditolak', { email: r.data.email, nonaktif: r.data.nonaktif }); go('ditolak'); }
+      else toast(r.message, 'bad');
+      return r;
+    }
+    Store.clearUser();
+    setSession(r.data.token || 'supabase-session', r.data.boot);
+    App.foto = r.data.foto;
+    if (isHRD()) loadAdmin().catch(function () { });
+    var next = Store.get('next', ''); Store.del('next');
+    App.layout = '';
+    if (next && next !== '#/login') location.hash = next; else go(defaultPage());
+    toast(sapa() + ', ' + r.data.boot.me.nama.split(' ')[0] + '!', 'ok');
     return r;
-  }
-  Store.clearUser();
-  setSession(r.data.token, r.data.boot);
-  App.foto = r.data.foto;
-  if (isHRD()) loadAdmin().catch(function () { });
-  var next = Store.get('next', ''); Store.del('next');
-  App.layout = '';
-  if (next && next !== '#/login') location.hash = next; else go(defaultPage());
-  toast(sapa() + ', ' + r.data.boot.me.nama.split(' ')[0] + '!', 'ok');
-  return r;
+  } finally { busy(false); }
 }
-function logout() {
-  if (App.token) api('logout', {}, { silent: true });
+async function logout() {
+  if (window.SB) {
+    await SB.signOut();
+  } else if (App.token) {
+    api('logout', {}, { silent: true });
+  }
   App.token = ''; App.boot = null; App.layout = ''; Store.del('sess'); Store.clearUser();
   $('#app').innerHTML = '';
   Object.keys(App.timers).forEach(function (k) { clearInterval(App.timers[k]); });
@@ -562,11 +600,78 @@ function onSessionExpired(msg) {
 
 /* ---------------------------------------------------------------- Start */
 async function start() {
-  var s = Store.get('sess', null);
-  if (s && s.token && Date.now() - s.t < 11.5 * 3600e3) { App.token = s.token; App.boot = s.boot; if (isHRD()) loadAdmin().catch(function () { }); }
-  warmUp();
-  route();
-  if (App.token) refreshBoot();
+  /* ── Cek sesi Supabase terlebih dahulu ── */
+  if (window.SB) {
+    var session = await SB.getSession();
+    if (session) {
+      // Ada sesi Supabase aktif. Render seketika dari cache (bila milik user yang sama),
+      // lalu segarkan bootstrap dari database.
+      var cached = Store.get('sess', null), emailSesi = String(session.user && session.user.email || '').toLowerCase();
+      var adaCache = !!(cached && cached.boot && cached.boot.me && String(cached.boot.me.email).toLowerCase() === emailSesi);
+      if (adaCache) { App.token = 'supabase-session'; App.boot = cached.boot; if (isHRD()) loadAdmin().catch(function () { }); route(); }
+      var boot = await SB.buildBootstrap();
+      if (boot.success) {
+        if (!adaCache) Store.clearUser();
+        App.token = 'supabase-session';
+        setSession(App.token, boot.data);
+        updateBadges();
+        if (!adaCache) { App.layout = ''; route(); }
+        if (isHRD()) loadAdmin().catch(function () { });
+      } else if (boot.data && boot.data.code === 'NOT_REGISTERED') {
+        // Login Google berhasil tetapi email tidak terdaftar / nonaktif di tabel Karyawan
+        await SB.signOut();
+        App.token = ''; App.boot = null; Store.del('sess');
+        Store.set('ditolak', { email: boot.data.email, nonaktif: boot.data.nonaktif });
+        go('ditolak');
+      } else if (!adaCache) {
+        // Gagal memuat (mis. offline) dan tidak ada cache → tampilkan halaman login
+        App.token = ''; route(); toast(boot.message, 'bad');
+      }
+    } else {
+      // Tidak ada sesi Supabase → data sesi lama di browser tidak berlaku lagi
+      Store.del('sess');
+      route();
+    }
+
+    // Listener auth state change (handle redirect callback dari Google OAuth)
+    SB.onAuthChange(function (event, session) {
+      if (event === 'SIGNED_IN' && session && !App.boot) {
+        // Baru login (misalnya dari redirect Google OAuth)
+        App.token = 'supabase-session';
+        SB.buildBootstrap().then(function (boot) {
+          if (boot.success) {
+            Store.clearUser();
+            setSession(App.token, boot.data);
+            App.foto = session.user && session.user.user_metadata ? session.user.user_metadata.avatar_url : '';
+            if (isHRD()) loadAdmin().catch(function () { });
+            var next = Store.get('next', ''); Store.del('next');
+            App.layout = '';
+            if (next && next !== '#/login') location.hash = next; else go(defaultPage());
+            toast(sapa() + ', ' + boot.data.me.nama.split(' ')[0] + '!', 'ok');
+          } else if (boot.data && boot.data.code === 'NOT_REGISTERED') {
+            Store.set('ditolak', { email: boot.data.email, nonaktif: boot.data.nonaktif });
+            go('ditolak');
+          }
+        });
+      } else if (event === 'SIGNED_OUT') {
+        if (App.token) {
+          App.token = ''; App.boot = null; App.layout = ''; Store.del('sess'); Store.clearUser();
+          go('login');
+        }
+      } else if (event === 'TOKEN_REFRESHED' && App.token) {
+        // Token di-refresh otomatis oleh Supabase, refresh bootstrap
+        refreshBoot();
+      }
+    });
+  } else {
+    /* ── Fallback: mode lama (GAS) ── */
+    var s2 = Store.get('sess', null);
+    if (s2 && s2.token && Date.now() - s2.t < 11.5 * 3600e3) { App.token = s2.token; App.boot = s2.boot; if (isHRD()) loadAdmin().catch(function () { }); }
+    warmUp();
+    route();
+    if (App.token) refreshBoot();
+  }
+
   var hiddenAt = 0;
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) { hiddenAt = Date.now(); return; }

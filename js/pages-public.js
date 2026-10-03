@@ -232,7 +232,7 @@ registerPage('login', {
   show: async function (el) {
     $('#lgBar', el).innerHTML = authBar();
     var card = $('#lgCard', el);
-    card.innerHTML = '<div class="center"><div class="row" style="justify-content:center;gap:12px"><div class="logo" style="width:52px;height:52px">' + ic('building-2', 'ic-lg') + '</div><div style="text-align:left"><div class="brand-t" style="font-size:16px">SIM HRD</div><div class="ov">v1.1 Enterprise</div></div></div>' +
+    card.innerHTML = '<div class="center"><div class="row" style="justify-content:center;gap:12px"><div class="logo" style="width:52px;height:52px">' + ic('building-2', 'ic-lg') + '</div><div style="text-align:left"><div class="brand-t" style="font-size:16px">SIM HRD</div><div class="ov">v2.0 Enterprise</div></div></div>' +
       '<h1 style="font-size:24px;margin:20px 0 6px">Masuk ke SIM HRD</h1><p class="muted" style="margin:0">Sistem Informasi Manajemen SDM & Operasional<br>' + esc(perusahaan()) + '</p></div>' +
       '<div class="mt-24" id="gHost"><div class="skel" style="height:48px"></div></div>' +
       '<div class="note mt-16">' + ic('info', 'blue-t') + '<div><b style="color:var(--ink)">Ketentuan Akun Google Karyawan</b><div class="small" style="margin-top:4px">Sistem mengizinkan email pribadi (Gmail, dll) atau email dinas. Pastikan Anda masuk menggunakan alamat email yang telah didaftarkan secara resmi oleh tim HRD pada Master Data Karyawan.</div></div></div>' +
